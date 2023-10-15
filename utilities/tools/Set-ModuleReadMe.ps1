@@ -1,4 +1,5 @@
 ﻿#requires -version 7.3
+#requires -Modules powershell-yaml
 
 <#
 .SYNOPSIS
@@ -42,6 +43,9 @@ function Set-ResourceTypesSection {
         [Parameter(Mandatory = $false)]
         [string[]] $ResourceTypesToExclude = @('Microsoft.Resources/deployments')
     )
+
+    # Loading used functions
+    . (Join-Path (Split-Path $PSScriptRoot -Parent) 'pipelines' 'sharedScripts' 'Get-NestedResourceList.ps1')
 
     # Process content
     $SectionContent = [System.Collections.ArrayList]@(
@@ -220,30 +224,6 @@ function Set-ParametersSection {
         $updatedFileContent = Merge-FileWithNewContent -oldContent $ReadMeFileContent -newContent $newSectionContent -SectionStartIdentifier $SectionStartIdentifier -contentType 'none'
     }
 
-    # Build sub-section 'ParameterUsage'
-    if (Test-Path (Join-Path $PSScriptRoot 'moduleReadMeSource')) {
-        if ($resourceUsageSourceFiles = Get-ChildItem (Join-Path $PSScriptRoot 'moduleReadMeSource') -Recurse -Filter 'resourceUsage-*') {
-            foreach ($sourceFile in $resourceUsageSourceFiles.FullName) {
-                $parameterName = (Split-Path $sourceFile -LeafBase).Replace('resourceUsage-', '')
-                if ($templateFileContent.parameters.Keys -contains $parameterName) {
-                    $subSectionStartIdentifier = '### Parameter Usage: `{0}`' -f $ParameterName
-
-                    # Build result
-                    $updateParameterUsageInputObject = @{
-                        OldContent             = $updatedFileContent
-                        NewContent             = (Get-Content $sourceFile -Raw).Trim()
-                        SectionStartIdentifier = $subSectionStartIdentifier
-                        ParentStartIdentifier  = $SectionStartIdentifier
-                        ContentType            = 'none'
-                    }
-                    if ($PSCmdlet.ShouldProcess(('Original file with new parameter usage [{0}] content' -f $parameterName), 'Merge')) {
-                        $updatedFileContent = Merge-FileWithNewContent @updateParameterUsageInputObject
-                    }
-                }
-            }
-        }
-    }
-
     return $updatedFileContent
 }
 
@@ -336,7 +316,7 @@ Mandatory. The readme file content array to update
 Optional. The identifier of the 'outputs' section. Defaults to '## Cross-referenced modules'
 
 .EXAMPLE
-Set-CrossReferencesSection -ModuleRoot 'C:/KeyVault/vaults' -FullModuleIdentifier 'Microsoft.KeyVault/vaults' -TemplateFileContent @{ resource = @{}; ... } -ReadMeFileContent @('# Title', '', '## Section 1', ...)
+Set-CrossReferencesSection -ModuleRoot 'C:/key-vault/vault' -FullModuleIdentifier 'key-vault/vault' -TemplateFileContent @{ resource = @{}; ... } -ReadMeFileContent @('# Title', '', '## Section 1', ...)
 Update the given readme file's 'Cross-referenced modules' section based on the given template file content
 #>
 function Set-CrossReferencesSection {
@@ -492,13 +472,12 @@ Mandatory. The JSON parameters block to process (ideally already without 'value'
 Mandatory. A list of all required top-level (i.e. non-nested) parameter names
 
 .EXAMPLE
-Get-OrderedParametersJSON -RequiredParametersList @('name') -ParametersJSON '{ "diagnosticLogsRetentionInDays": 7,"lock": "CanNotDelete","name": "carml" }'
+Get-OrderedParametersJSON -RequiredParametersList @('name') -ParametersJSON '{ "lock": "CanNotDelete","name": "carml" }'
 
 Order the given JSON object alphabetically. Would result into:
 
 @{
     name: 'carml'
-    diagnosticLogsRetentionInDays: 7
     lock: 'CanNotDelete'
 }
 #>
@@ -551,7 +530,7 @@ Mandatory. The parameter JSON object to process
 Mandatory. A list of all required top-level (i.e. non-nested) parameter names
 
 .EXAMPLE
-Build-OrderedJSONObject -RequiredParametersList @('name') -ParametersJSON '{ "lock": { "value": "CanNotDelete" }, "name": { "value": "carml" }, "diagnosticLogsRetentionInDays": { "value": 7 } }'
+Build-OrderedJSONObject -RequiredParametersList @('name') -ParametersJSON '{ "lock": { "value": "CanNotDelete" }, "name": { "value": "carml" } }'
 
 Build a formatted Parameter-JSON object with one required parameter. Would result into:
 
@@ -564,9 +543,6 @@ Build a formatted Parameter-JSON object with one required parameter. Would resul
             "value": "carml"
         },
         // Non-required parameters
-        "diagnosticLogsRetentionInDays": {
-            "value": 7
-        },
         "lock": {
             "value": "CanNotDelete"
         }
@@ -734,6 +710,9 @@ function ConvertTo-FormattedJSONParameterObject {
             if ($line -notlike '*"*"*' -and $line -like '*.*') {
                 # In case of a array value like '[ \n -> resourceGroupResources.outputs.managedIdentityPrincipalId <- \n ]' we'll only show "<managedIdentityPrincipalId>""
                 $line = '"<{0}>"' -f $line.Split('.')[-1].Trim()
+            } elseif ($line -match '^\s*[a-zA-Z]+\s*$') {
+                # If there is simply only a value such as a variable reference, we'll wrap it as a string to replace. For example a reference of a variable `addressPrefix` will be replaced with `"<addressPrefix>"`
+                $line = '"<{0}>"' -f $line.Trim()
             }
         }
 
@@ -792,7 +771,6 @@ Convert the given JSONParameters object with one required parameter to a formatt
     // Required parameters
     name: 'carml'
     // Non-required parameters
-    diagnosticLogsRetentionInDays: 7
     lock: 'CanNotDelete'
 '
 #>
@@ -820,7 +798,7 @@ function ConvertTo-FormattedBicep {
     }
 
     # [1/5] Order parameters recursively
-    if ($JSONParametersWithoutValue.Keys.Count -gt 0) {
+    if ($JSONParametersWithoutValue.psbase.Keys.Count -gt 0) {
         $orderedJSONParameters = Get-OrderedParametersJSON -ParametersJSON ($JSONParametersWithoutValue | ConvertTo-Json -Depth 99) -RequiredParametersList $RequiredParametersList
     } else {
         $orderedJSONParameters = @{}
@@ -856,7 +834,7 @@ function ConvertTo-FormattedBicep {
     $splitInputObject = @{
         BicepParams            = $bicepParams
         RequiredParametersList = $RequiredParametersList
-        AllParametersList      = $JSONParameters.Keys
+        AllParametersList      = $JSONParameters.psbase.Keys
     }
     $commentedBicepParams = Add-BicepParameterTypeComment @splitInputObject
 
@@ -892,7 +870,7 @@ Optional. A switch to control whether or not to add a ARM-JSON-Parameter file ex
 Optional. A switch to control whether or not to add a Bicep deployment example. Defaults to true.
 
 .EXAMPLE
-Set-DeploymentExamplesSection -ModuleRoot 'C:/KeyVault/vaults' -FullModuleIdentifier 'Microsoft.KeyVault/vaults' -TemplateFileContent @{ resource = @{}; ... } -ReadMeFileContent @('# Title', '', '## Section 1', ...)
+Set-DeploymentExamplesSection -ModuleRoot 'C:/key-vault/vault' -FullModuleIdentifier 'key-vault/vault' -TemplateFileContent @{ resource = @{}; ... } -ReadMeFileContent @('# Title', '', '## Section 1', ...)
 
 Update the given readme file's 'Deployment Examples' section based on the given template file content
 #>
@@ -990,14 +968,19 @@ function Set-DeploymentExamplesSection {
             # ------------------------- #
 
             # [1/6] Search for the relevant parameter start & end index
-            $bicepTestStartIndex = ($rawContentArray | Select-String ("^module testDeployment '..\/.*main.bicep' = {$") | ForEach-Object { $_.LineNumber - 1 })[0]
+            $bicepTestStartIndex = ($rawContentArray | Select-String ("^module testDeployment '..\/.*main.bicep' = ") | ForEach-Object { $_.LineNumber - 1 })[0]
 
             $bicepTestEndIndex = $bicepTestStartIndex
             do {
                 $bicepTestEndIndex++
-            } while ($rawContentArray[$bicepTestEndIndex] -ne '}')
+            } while ($rawContentArray[$bicepTestEndIndex] -notin @('}', '}]'))
 
             $rawBicepExample = $rawContentArray[$bicepTestStartIndex..$bicepTestEndIndex]
+
+            # In case a loop was used for the test
+            if ($rawBicepExample[-1] -eq '}]') {
+                $rawBicepExample[-1] = '}'
+            }
 
             # [2/6] Replace placeholders
             $serviceShort = ([regex]::Match($rawContent, "(?m)^param serviceShort string = '(.+)'\s*$")).Captures.Groups[1].Value
@@ -1393,19 +1376,19 @@ If a readme file does exist, its title and description are updated with whatever
 Required. The path to the readme file to initialize.
 
 .PARAMETER FullModuleIdentifier
-Required. The full identifier of the module. For example: 'sql/managed-instances/administrators'
+Required. The full identifier of the module. For example: 'sql/managed-instance/administrator'
 
 .PARAMETER TemplateFileContent
 Mandatory. The template file content object to crawl data from
 
 .EXAMPLE
-Initialize-ReadMe -ReadMeFilePath 'C:/ResourceModules/modules/sql/managed-instances/administrators/readme.md' -FullModuleIdentifier 'sql/managed-instances/administrators' -TemplateFileContent @{ resource = @{}; ... }
+Initialize-ReadMe -ReadMeFilePath 'C:/ResourceModules/modules/sql/managed-instances/administrators/readme.md' -FullModuleIdentifier 'sql/managed-instance/administrator' -TemplateFileContent @{ resource = @{}; ... }
 
-Initialize the readme of the 'sql/managed-instances/administrators' module
+Initialize the readme of the 'sql/managed-instance/administrator' module
 #>
 function Initialize-ReadMe {
 
-    [CmdletBinding(SupportsShouldProcess)]
+    [CmdletBinding()]
     param (
         [Parameter(Mandatory = $true)]
         [string] $ReadMeFilePath,
@@ -1417,16 +1400,27 @@ function Initialize-ReadMe {
         [hashtable] $TemplateFileContent
     )
 
-    . (Join-Path $PSScriptRoot 'helper' 'ConvertTo-ModuleResourceType.ps1')
+    . (Join-Path $PSScriptRoot 'helper' 'Get-SpecsAlignedResourceName.ps1')
+    . (Join-Path (Split-Path $PSScriptRoot -Parent) 'pipelines' 'sharedScripts' 'Get-NestedResourceList.ps1')
+
 
     $moduleName = $TemplateFileContent.metadata.name
     $moduleDescription = $TemplateFileContent.metadata.description
-    $formattedResourceType = ConvertTo-ModuleResourceType -ResourceIdentifier $FullModuleIdentifier
+    $formattedResourceType = Get-SpecsAlignedResourceName -ResourceIdentifier $FullModuleIdentifier
+
+    $inTemplateResourceType = (Get-NestedResourceList $TemplateFileContent).type | Select-Object -Unique | Where-Object {
+        $_ -match "^$formattedResourceType$"
+    }
+
+    if (-not $inTemplateResourceType) {
+        Write-Warning "No resource type like [$formattedResourceType] found in template. Falling back to it as identifier."
+        $inTemplateResourceType = $formattedResourceType
+    }
 
     if (-not (Test-Path $ReadMeFilePath) -or ([String]::IsNullOrEmpty((Get-Content $ReadMeFilePath -Raw)))) {
 
         $initialContent = @(
-            "# $moduleName ``[$formattedResourceType]``",
+            "# $moduleName ``[$inTemplateResourceType]``",
             '',
             $moduleDescription,
             ''
@@ -1439,7 +1433,7 @@ function Initialize-ReadMe {
         $readMeFileContent = $initialContent
     } else {
         $readMeFileContent = Get-Content -Path $ReadMeFilePath -Encoding 'utf8'
-        $readMeFileContent[0] = "# $moduleName ``[$formattedResourceType]``"
+        $readMeFileContent[0] = "# $moduleName ``[$inTemplateResourceType]``"
 
         # We want to inject the description right below the header and before the [Resource Types] section
 
@@ -1497,30 +1491,25 @@ Set-ModuleReadMe -TemplateFilePath 'C:\main.bicep'
 Update the readme in path 'C:\README.md' based on the bicep template in path 'C:\main.bicep'
 
 .EXAMPLE
-Set-ModuleReadMe -TemplateFilePath 'C:/Network/loadBalancers/main.bicep' -SectionsToRefresh @('Parameters', 'Outputs')
+Set-ModuleReadMe -TemplateFilePath 'C:/network/load-balancer/main.bicep' -SectionsToRefresh @('Parameters', 'Outputs')
 
 Generate the Module ReadMe only for specific sections. Updates only the sections `Parameters` & `Outputs`. Other sections remain untouched.
 
 .EXAMPLE
-Set-ModuleReadMe -TemplateFilePath 'C:/Network/loadBalancers/main.bicep' -TemplateFileContent @{...}
+Set-ModuleReadMe -TemplateFilePath 'C:/network/load-balancer/main.bicep' -TemplateFileContent @{...}
 
 (Re)Generate the readme file for template 'loadBalancer' based on the content provided in the TemplateFileContent parameter
 
 .EXAMPLE
-Set-ModuleReadMe -TemplateFilePath 'C:/Network/loadBalancers/main.bicep' -ReadMeFilePath 'C:/differentFolder'
+Set-ModuleReadMe -TemplateFilePath 'C:/network/load-balancer/main.bicep' -ReadMeFilePath 'C:/differentFolder'
 
 Generate the Module ReadMe files into a specific folder path
 
 .EXAMPLE
-$templatePaths = (Get-ChildItem 'C:/Network' -Filter 'main.bicep' -Recurse).FullName
+$templatePaths = (Get-ChildItem 'C:/network' -Filter 'main.bicep' -Recurse).FullName
 $templatePaths | ForEach-Object -Parallel { . '<PathToRepo>/utilities/tools/Set-ModuleReadMe.ps1' ; Set-ModuleReadMe -TemplateFilePath $_ }
 
 Generate the Module ReadMe for any template in a folder path
-
-.NOTES
-The script autopopulates the Parameter Usage section of the ReadMe with the matching content in path './moduleReadMeSource'.
-The content is added in case the given template has a parameter that matches the suffix of one of the files in that path.
-To account for more parameter, just add another markdown file with the naming pattern 'resourceUsage-<parameterName>'
 #>
 function Set-ModuleReadMe {
 
@@ -1558,7 +1547,6 @@ function Set-ModuleReadMe {
 
     # Load external functions
     . (Join-Path $PSScriptRoot 'helper' 'Merge-FileWithNewContent.ps1')
-    . (Join-Path (Split-Path $PSScriptRoot -Parent) 'pipelines' 'sharedScripts' 'Get-NestedResourceList.ps1')
 
     # Check template & make full path
     $TemplateFilePath = Resolve-Path -Path $TemplateFilePath -ErrorAction Stop
@@ -1580,9 +1568,9 @@ function Set-ModuleReadMe {
     }
 
     $moduleRoot = Split-Path $TemplateFilePath -Parent
-    $fullModuleIdentifier = $moduleRoot.Replace('\', '/').split('modules/')[1]
+    $fullModuleIdentifier = $moduleRoot.Replace('\', '/').split('modules/')[-1]
     # Custom modules are modules having the same resource type but different properties based on the name
-    # E.g., web/sites/config--appsettings vs web/sites/config--authsettingsv2
+    # E.g., web/site/config--appsetting vs web/site/config--authsettingv2
     $customModuleSeparator = '--'
     if ($fullModuleIdentifier.Contains($customModuleSeparator)) {
         $fullModuleIdentifier = $fullModuleIdentifier.split($customModuleSeparator)[0]

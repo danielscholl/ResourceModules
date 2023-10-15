@@ -110,11 +110,6 @@ param privateEndpoints array = []
 @description('Optional. The name of the diagnostic setting, if deployed. If left empty, it defaults to "<resourceName>-diagnosticSettings".')
 param diagnosticSettingsName string = ''
 
-@description('Optional. Specifies the number of days that logs will be kept for; a value of 0 will retain data indefinitely.')
-@minValue(0)
-@maxValue(365)
-param diagnosticLogsRetentionInDays int = 365
-
 @description('Optional. Resource ID of the diagnostic storage account. For security reasons, it is recommended to set diagnostic settings to send data to either storage account, log analytics workspace or event hub.')
 param diagnosticStorageAccountId string = ''
 
@@ -153,20 +148,12 @@ var availabilityZones = skuName == 'Premium' ? zoneRedundant ? !empty(zones) ? z
 var diagnosticsLogsSpecified = [for category in filter(diagnosticLogCategoriesToEnable, item => item != 'allLogs' && item != ''): {
   category: category
   enabled: true
-  retentionPolicy: {
-    enabled: true
-    days: diagnosticLogsRetentionInDays
-  }
 }]
 
 var diagnosticsLogs = contains(diagnosticLogCategoriesToEnable, 'allLogs') ? [
   {
     categoryGroup: 'allLogs'
     enabled: true
-    retentionPolicy: {
-      enabled: true
-      days: diagnosticLogsRetentionInDays
-    }
   }
 ] : contains(diagnosticLogCategoriesToEnable, '') ? [] : diagnosticsLogsSpecified
 
@@ -174,10 +161,6 @@ var diagnosticsMetrics = [for metric in diagnosticMetricsToEnable: {
   category: metric
   timeGrain: null
   enabled: true
-  retentionPolicy: {
-    enabled: true
-    days: diagnosticLogsRetentionInDays
-  }
 }]
 
 var identityType = systemAssignedIdentity ? 'SystemAssigned' : !empty(userAssignedIdentities) ? 'UserAssigned' : 'None'
@@ -201,7 +184,7 @@ resource defaultTelemetry 'Microsoft.Resources/deployments@2021-04-01' = if (ena
   }
 }
 
-resource redisCache 'Microsoft.Cache/redis@2021-06-01' = {
+resource redisCache 'Microsoft.Cache/redis@2022-06-01' = {
   name: name
   location: location
   tags: tags
@@ -250,7 +233,7 @@ resource redisCache_diagnosticSettings 'Microsoft.Insights/diagnosticSettings@20
 }
 
 module redisCache_rbac '.bicep/nested_roleAssignments.bicep' = [for (roleAssignment, index) in roleAssignments: {
-  name: '${uniqueString(deployment().name, location)}-AppGateway-Rbac-${index}'
+  name: '${uniqueString(deployment().name, location)}-redisCache-Rbac-${index}'
   params: {
     description: contains(roleAssignment, 'description') ? roleAssignment.description : ''
     principalIds: roleAssignment.principalIds
@@ -262,7 +245,7 @@ module redisCache_rbac '.bicep/nested_roleAssignments.bicep' = [for (roleAssignm
   }
 }]
 
-module redisCache_privateEndpoints '../../network/private-endpoints/main.bicep' = [for (privateEndpoint, index) in privateEndpoints: {
+module redisCache_privateEndpoints '../../network/private-endpoint/main.bicep' = [for (privateEndpoint, index) in privateEndpoints: {
   name: '${uniqueString(deployment().name, location)}-redisCache-PrivateEndpoint-${index}'
   params: {
     groupIds: [
@@ -272,7 +255,7 @@ module redisCache_privateEndpoints '../../network/private-endpoints/main.bicep' 
     serviceResourceId: redisCache.id
     subnetResourceId: privateEndpoint.subnetResourceId
     enableDefaultTelemetry: enableReferencedModulesTelemetry
-    location: reference(split(privateEndpoint.subnetResourceId, '/subnets/')[0], '2020-06-01', 'Full').location
+    location: contains(privateEndpoint, 'location') ? privateEndpoint.location : reference(split(privateEndpoint.subnetResourceId, '/subnets/')[0], '2020-06-01', 'Full').location
     lock: contains(privateEndpoint, 'lock') ? privateEndpoint.lock : lock
     privateDnsZoneGroup: contains(privateEndpoint, 'privateDnsZoneGroup') ? privateEndpoint.privateDnsZoneGroup : {}
     roleAssignments: contains(privateEndpoint, 'roleAssignments') ? privateEndpoint.roleAssignments : []
@@ -285,13 +268,13 @@ module redisCache_privateEndpoints '../../network/private-endpoints/main.bicep' 
   }
 }]
 
-@description('The resource name.')
+@description('The name of the Redis Cache.')
 output name string = redisCache.name
 
-@description('The resource ID.')
+@description('The resource ID of the Redis Cache.')
 output resourceId string = redisCache.id
 
-@description('The name of the resource group the Redis cache was created in.')
+@description('The name of the resource group the Redis Cache was created in.')
 output resourceGroupName string = resourceGroup().name
 
 @description('Redis hostname.')
@@ -300,7 +283,7 @@ output hostName string = redisCache.properties.hostName
 @description('Redis SSL port.')
 output sslPort int = redisCache.properties.sslPort
 
-@description('The full resource ID of a subnet in a virtual network where the Redis cache was deployed in.')
+@description('The full resource ID of a subnet in a virtual network where the Redis Cache was deployed in.')
 output subnetId string = !empty(subnetId) ? redisCache.properties.subnetId : ''
 
 @description('The location the resource was deployed into.')
